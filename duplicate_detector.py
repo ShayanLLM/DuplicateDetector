@@ -9,6 +9,8 @@ from pathlib import Path
 import threading
 import time
 import shutil
+import subprocess
+import platform
 
 class DuplicateDetectorGUI:
     def __init__(self, root):
@@ -97,6 +99,9 @@ class DuplicateDetectorGUI:
         self.tree.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         v_scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
         h_scrollbar.grid(row=1, column=0, sticky=(tk.W, tk.E))
+        
+        # Bind double-click event to open files
+        self.tree.bind('<Double-1>', self.on_double_click)
         
         # Status bar
         self.status_var = tk.StringVar()
@@ -360,7 +365,7 @@ class DuplicateDetectorGUI:
         for item in selected_items:
             self.tree.selection_add(item)
         
-        messagebox.showinfo("Smart Selection", f"Selected {len(selected_items)} files for removal.")
+        messagebox.showinfo("Smart Selection", f"Selected {len(selected_items)} files.")
     
     def move_selected(self):
         """Move selected files to a new folder"""
@@ -507,6 +512,33 @@ class DuplicateDetectorGUI:
         # Update duplicate count
         remaining_groups = len([item for item in self.tree.get_children() if self.tree.get_children(item)])
         self.duplicate_count_var.set(f"Duplicates: {remaining_groups}")
+    
+    def on_double_click(self, event):
+        """Handle double-click on tree items to open files"""
+        item = self.tree.selection()[0] if self.tree.selection() else None
+        
+        if not item:
+            return
+        
+        # Check if it's a file item (not a group header)
+        if item in self.tree_items:
+            file_path = self.tree_items[item]['path']
+            
+            if os.path.exists(file_path):
+                try:
+                    # Cross-platform file opening
+                    if platform.system() == 'Windows':
+                        os.startfile(file_path)
+                    elif platform.system() == 'Darwin':  # macOS
+                        subprocess.run(['open', file_path])
+                    else:  # Linux and other Unix-like systems
+                        subprocess.run(['xdg-open', file_path])
+                        
+                    self.status_var.set(f"Opened: {os.path.basename(file_path)}")
+                except Exception as e:
+                    messagebox.showerror("Error", f"Could not open file: {str(e)}")
+            else:
+                messagebox.showwarning("File Not Found", f"File no longer exists:\n{file_path}")
     
     def clear_results(self):
         """
