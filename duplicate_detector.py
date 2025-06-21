@@ -529,9 +529,9 @@ class DuplicateDetectorGUI:
 
     def show_directory_selection_dialog(self):
         dir_dialog = tk.Toplevel(self.root)
-        dir_dialog.title("Select Directory to Keep")
-        dir_dialog.geometry("400x200")
-        dir_dialog.resizable(False, False)
+        dir_dialog.title("Select Directories to Keep")
+        dir_dialog.geometry("450x300")
+        dir_dialog.minsize(350, 250)
         dir_dialog.transient(self.root)
         dir_dialog.grab_set()
 
@@ -541,40 +541,77 @@ class DuplicateDetectorGUI:
         y = (self.root.winfo_screenheight() // 2) - (dir_dialog.winfo_height() // 2)
         dir_dialog.geometry(f"+{x}+{y}")
         
-        ttk.Label(dir_dialog, text="Choose which directory's files to keep:").pack(pady=10)
+        main_frame = ttk.Frame(dir_dialog, padding=(10, 10, 10, 0))
+        main_frame.pack(fill=tk.BOTH, expand=True)
 
-        dir_var = tk.StringVar()
+        ttk.Label(main_frame, text="Select directories whose files you want to keep:").pack(pady=(0, 10), anchor=tk.W)
+
+        # --- Button frame at the bottom ---
+        button_frame = ttk.Frame(main_frame, padding=(0, 10, 0, 10))
+        button_frame.pack(side=tk.BOTTOM, fill=tk.X)
         
-        dir_combo = ttk.Combobox(dir_dialog, textvariable=dir_var, values=self.directories, state="readonly", width=60)
-        dir_combo.pack(pady=5, padx=20, fill=tk.X)
-        if self.directories:
-            dir_combo.current(0)
-
         def apply_dir_selection():
-            keep_dir = dir_var.get()
-            if not keep_dir:
-                messagebox.showwarning("Warning", "Please select a directory.", parent=dir_dialog)
+            keep_dirs = [dir_path for dir_path, var in self.dir_vars.items() if var.get()]
+            if not keep_dirs:
+                messagebox.showwarning("Warning", "Please select at least one directory to keep.", parent=dir_dialog)
                 return
-
             dir_dialog.destroy()
-            self.perform_directory_based_selection(keep_dir)
+            self.perform_directory_based_selection(keep_dirs)
 
-        button_frame = ttk.Frame(dir_dialog)
-        button_frame.pack(pady=20)
+        ttk.Button(button_frame, text="Cancel", command=dir_dialog.destroy).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(button_frame, text="Apply", command=apply_dir_selection).pack(side=tk.RIGHT, padx=5)
 
-        ttk.Button(button_frame, text="Apply", command=apply_dir_selection).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="Cancel", command=dir_dialog.destroy).pack(side=tk.LEFT, padx=5)
+        # --- Scrollable frame for the checkboxes ---
+        list_frame = ttk.Frame(main_frame)
+        list_frame.pack(fill=tk.BOTH, expand=True)
 
-    def perform_directory_based_selection(self, keep_dir):
-        """Selects all duplicate files except those in the keep_dir."""
+        canvas = tk.Canvas(list_frame, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.dir_vars = {}
+        for dir_path in self.directories:
+            var = tk.BooleanVar(value=False)
+            self.dir_vars[dir_path] = var
+            
+            # Create a frame for each checkbutton and label to allow text wrapping
+            item_frame = ttk.Frame(scrollable_frame)
+            item_frame.pack(anchor=tk.W, padx=10, pady=2, fill=tk.X)
+
+            cb = ttk.Checkbutton(item_frame, variable=var)
+            cb.pack(side=tk.LEFT, anchor=tk.NW, padx=(0, 5))
+
+            label = ttk.Label(item_frame, text=dir_path, wraplength=350, justify=tk.LEFT, cursor="hand2")
+            label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            # Allow clicking the label to toggle the checkbox
+            label.bind("<Button-1>", lambda event, v=var: v.set(not v.get()))
+
+    def perform_directory_based_selection(self, keep_dirs):
+        """Selects all duplicate files except those in the keep_dirs."""
         self.selection_set.clear()
         selected_paths = []
 
-        try:
-            # Use pathlib for robust path comparisons
-            keep_path_resolved = Path(keep_dir).resolve()
-        except FileNotFoundError:
-            messagebox.showerror("Error", f"The directory to keep no longer exists: {keep_dir}")
+        resolved_keep_paths = []
+        for keep_dir in keep_dirs:
+            try:
+                resolved_keep_paths.append(Path(keep_dir).resolve())
+            except FileNotFoundError:
+                messagebox.showwarning("Warning", f"The directory '{keep_dir}' no longer exists and will be ignored.")
+        
+        if not resolved_keep_paths:
+            messagebox.showerror("Error", "None of the selected 'keep' directories exist.")
             return
 
         for _, file_paths in self.all_duplicate_groups:
@@ -582,17 +619,25 @@ class DuplicateDetectorGUI:
             files_to_keep_in_group = []
 
             for path in file_paths:
+                is_in_keep_dir = False
                 try:
                     file_path_resolved = Path(path).resolve(strict=True)
-                    # Check if the file's path is inside the directory to keep
-                    file_path_resolved.relative_to(keep_path_resolved)
-                    files_to_keep_in_group.append(path)
-                except ValueError:
-                    # This means the file is not in the keep_dir, so we should select it
-                    files_to_select_in_group.append(path)
+                    for keep_path in resolved_keep_paths:
+                        try:
+                            # Check if the file's path is inside one of the directories to keep
+                            file_path_resolved.relative_to(keep_path)
+                            is_in_keep_dir = True
+                            break # Found a keep directory, no need to check others
+                        except ValueError:
+                            continue # Not in this keep_dir, check the next one
+                    
+                    if is_in_keep_dir:
+                        files_to_keep_in_group.append(path)
+                    else:
+                        files_to_select_in_group.append(path)
+
                 except FileNotFoundError:
-                    # File might have been deleted since the scan, so we can't check it.
-                    # We can add it to the selection list to be safe, as it's not in the keep_dir.
+                    # File might have been deleted since scan.
                     files_to_select_in_group.append(path)
 
             # If there's at least one file to keep, select all the others in the group.
