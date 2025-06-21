@@ -421,7 +421,7 @@ class DuplicateDetectorGUI:
         
         dialog = tk.Toplevel(self.root)
         dialog.title("Smart Selection")
-        dialog.geometry("300x200")
+        dialog.geometry("400x250")
         dialog.resizable(False, False)
         dialog.transient(self.root)
         dialog.grab_set()
@@ -432,14 +432,41 @@ class DuplicateDetectorGUI:
         y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
         dialog.geometry(f"+{x}+{y}")
         
-        ttk.Label(dialog, text="Select files to keep:", font=('TkDefaultFont', 10, 'bold')).pack(pady=10)
+        ttk.Label(dialog, text="Select files to keep (all others will be selected):", font=('TkDefaultFont', 10, 'bold')).pack(pady=10)
         
         selection_var = tk.StringVar(value="newest")
         
-        ttk.Radiobutton(dialog, text="Select newest files", 
+        ttk.Radiobutton(dialog, text="Keep newest files", 
                        variable=selection_var, value="newest").pack(anchor=tk.W, padx=20, pady=5)
-        ttk.Radiobutton(dialog, text="Select oldest files", 
+        ttk.Radiobutton(dialog, text="Keep oldest files", 
                        variable=selection_var, value="oldest").pack(anchor=tk.W, padx=20, pady=5)
+
+        # Directory selection option
+        dir_frame = ttk.Frame(dialog)
+        dir_frame.pack(anchor=tk.W, padx=20, pady=5, fill=tk.X)
+        
+        dir_radio = ttk.Radiobutton(dir_frame, text="Keep files from a specific directory", 
+                                    variable=selection_var, value="directory")
+        dir_radio.pack(side=tk.LEFT)
+        
+        status_label_text = tk.StringVar()
+        if len(self.directories) < 2:
+            dir_radio.config(state=tk.DISABLED)
+            
+            tooltip_label = ttk.Label(dir_frame, text="(?)", cursor="hand2")
+            tooltip_label.pack(side=tk.LEFT, padx=(5,0))
+            
+            def show_tip(event):
+                status_label_text.set("Add multiple directories to use this option.")
+
+            def hide_tip(event):
+                status_label_text.set("")
+            
+            tooltip_label.bind("<Enter>", show_tip)
+            tooltip_label.bind("<Leave>", hide_tip)
+        
+        status_label = ttk.Label(dialog, textvariable=status_label_text, foreground="gray")
+        status_label.pack(pady=(0, 5))
         
         button_frame = ttk.Frame(dialog)
         button_frame.pack(pady=20)
@@ -450,8 +477,12 @@ class DuplicateDetectorGUI:
                   command=dialog.destroy).pack(side=tk.LEFT, padx=5)
     
     def apply_smart_selection(self, selection_type, dialog):
-        """Apply smart selection based on file dates"""
+        """Apply smart selection based on file dates or directory"""
         dialog.destroy()
+
+        if selection_type == "directory":
+            self.show_directory_selection_dialog()
+            return
         
         # Clear current selection
         self.selection_set.clear()
@@ -493,6 +524,104 @@ class DuplicateDetectorGUI:
         # Refresh the current page to show new selections
         self.display_current_page()
         
+        self.status_var.set(f"Selected {len(self.selection_set)} files.")
+        messagebox.showinfo("Smart Selection", f"Selected {len(self.selection_set)} files.")
+
+    def show_directory_selection_dialog(self):
+        dir_dialog = tk.Toplevel(self.root)
+        dir_dialog.title("Select Directory to Keep")
+        dir_dialog.geometry("400x200")
+        dir_dialog.resizable(False, False)
+        dir_dialog.transient(self.root)
+        dir_dialog.grab_set()
+
+        # Center the dialog
+        dir_dialog.update_idletasks()
+        x = (self.root.winfo_screenwidth() // 2) - (dir_dialog.winfo_width() // 2)
+        y = (self.root.winfo_screenheight() // 2) - (dir_dialog.winfo_height() // 2)
+        dir_dialog.geometry(f"+{x}+{y}")
+        
+        ttk.Label(dir_dialog, text="Choose which directory's files to keep:").pack(pady=10)
+
+        dir_var = tk.StringVar()
+        
+        dir_combo = ttk.Combobox(dir_dialog, textvariable=dir_var, values=self.directories, state="readonly", width=60)
+        dir_combo.pack(pady=5, padx=20, fill=tk.X)
+        if self.directories:
+            dir_combo.current(0)
+
+        def apply_dir_selection():
+            keep_dir = dir_var.get()
+            if not keep_dir:
+                messagebox.showwarning("Warning", "Please select a directory.", parent=dir_dialog)
+                return
+
+            dir_dialog.destroy()
+            self.perform_directory_based_selection(keep_dir)
+
+        button_frame = ttk.Frame(dir_dialog)
+        button_frame.pack(pady=20)
+
+        ttk.Button(button_frame, text="Apply", command=apply_dir_selection).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Cancel", command=dir_dialog.destroy).pack(side=tk.LEFT, padx=5)
+
+    def perform_directory_based_selection(self, keep_dir):
+        """Selects all duplicate files except those in the keep_dir."""
+        self.selection_set.clear()
+        selected_paths = []
+
+        try:
+            # Use pathlib for robust path comparisons
+            keep_path_resolved = Path(keep_dir).resolve()
+        except FileNotFoundError:
+            messagebox.showerror("Error", f"The directory to keep no longer exists: {keep_dir}")
+            return
+
+        for _, file_paths in self.all_duplicate_groups:
+            files_to_select_in_group = []
+            files_to_keep_in_group = []
+
+            for path in file_paths:
+                try:
+                    file_path_resolved = Path(path).resolve(strict=True)
+                    # Check if the file's path is inside the directory to keep
+                    file_path_resolved.relative_to(keep_path_resolved)
+                    files_to_keep_in_group.append(path)
+                except ValueError:
+                    # This means the file is not in the keep_dir, so we should select it
+                    files_to_select_in_group.append(path)
+                except FileNotFoundError:
+                    # File might have been deleted since the scan, so we can't check it.
+                    # We can add it to the selection list to be safe, as it's not in the keep_dir.
+                    files_to_select_in_group.append(path)
+
+            # If there's at least one file to keep, select all the others in the group.
+            if files_to_keep_in_group:
+                selected_paths.extend(files_to_select_in_group)
+            else:
+                # If no files are from the keep_dir (e.g., the group only contains
+                # files from other selected directories), we apply a safety rule:
+                # select all but one file in the group to avoid deleting all copies.
+                if len(file_paths) > 1:
+                    files_info = []
+                    for path in file_paths:
+                        try:
+                            mtime = os.path.getmtime(path)
+                            files_info.append((path, mtime))
+                        except OSError:
+                            continue
+                    
+                    if files_info:
+                        # Keep the newest file by default
+                        files_info.sort(key=lambda x: x[1])
+                        paths_to_add = [path for path, _ in files_info[:-1]]
+                        selected_paths.extend(paths_to_add)
+
+        self.selection_set.update(selected_paths)
+        
+        self.display_current_page()
+        
+        self.status_var.set(f"Selected {len(self.selection_set)} files.")
         messagebox.showinfo("Smart Selection", f"Selected {len(self.selection_set)} files.")
     
     def move_selected(self):
