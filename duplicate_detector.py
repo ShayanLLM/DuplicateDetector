@@ -20,8 +20,13 @@ class DuplicateDetectorGUI:
         self.root.minsize(1000, 700)
         
         # Variables
-        self.directory_var = tk.StringVar()
+        self.directories = []
         self.duplicates = {}
+        self.all_duplicate_groups = []
+        self.selection_set = set() # Store paths of selected files
+        self.current_page = 1
+        self.groups_per_page = 100
+        self.total_pages = 0
         self.tree_items = {}
         self.duplicate_count_var = tk.StringVar(value="Duplicates: 0")
         self.eta_var = tk.StringVar(value="ETA: --")
@@ -45,11 +50,17 @@ class DuplicateDetectorGUI:
         # Directory selection frame
         dir_frame = ttk.LabelFrame(main_frame, text="Directory Selection", padding="10")
         dir_frame.grid(row=0, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=(0, 10))
-        dir_frame.columnconfigure(1, weight=1)
+        dir_frame.columnconfigure(0, weight=1)
+        dir_frame.rowconfigure(0, weight=1)
+
+        self.dir_listbox = tk.Listbox(dir_frame, height=4)
+        self.dir_listbox.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 5))
         
-        ttk.Label(dir_frame, text="Directory:").grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
-        ttk.Entry(dir_frame, textvariable=self.directory_var, width=50).grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 5))
-        ttk.Button(dir_frame, text="Browse", command=self.browse_directory).grid(row=0, column=2, sticky=tk.W)
+        dir_buttons_frame = ttk.Frame(dir_frame)
+        dir_buttons_frame.grid(row=0, column=1, sticky=(tk.N, tk.S))
+
+        ttk.Button(dir_buttons_frame, text="Add Directory", command=self.add_directory).pack(padx=5, pady=2, fill=tk.X)
+        ttk.Button(dir_buttons_frame, text="Remove Selected", command=self.remove_directory).pack(padx=5, pady=2, fill=tk.X)
         
         # Stats frame
         stats_frame = ttk.LabelFrame(main_frame, text="Statistics", padding="10")
@@ -63,15 +74,16 @@ class DuplicateDetectorGUI:
         control_frame.grid(row=2, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=(0, 10))
         
         ttk.Button(control_frame, text="Scan for Duplicates", command=self.scan_duplicates).grid(row=0, column=0, padx=(0, 5))
-        ttk.Button(control_frame, text="Smart Select", command=self.show_smart_select_dialog).grid(row=0, column=1, padx=(0, 5))
-        ttk.Button(control_frame, text="Delete Selected", command=self.delete_selected).grid(row=0, column=2, padx=(0, 5))
-        ttk.Button(control_frame, text="Create Folder with Selection", command=self.move_selected).grid(row=0, column=3, padx=(0, 5))
-        ttk.Button(control_frame, text="Clear Results", command=self.clear_results).grid(row=0, column=4, padx=(0, 10))
+        ttk.Button(control_frame, text="Select All", command=self.select_all_duplicates).grid(row=0, column=1, padx=(0, 5))
+        ttk.Button(control_frame, text="Smart Select", command=self.show_smart_select_dialog).grid(row=0, column=2, padx=(0, 5))
+        ttk.Button(control_frame, text="Delete Selected", command=self.delete_selected).grid(row=0, column=3, padx=(0, 5))
+        ttk.Button(control_frame, text="Create Folder with Selection", command=self.move_selected).grid(row=0, column=4, padx=(0, 5))
+        ttk.Button(control_frame, text="Clear Results", command=self.clear_results).grid(row=0, column=5, padx=(0, 10))
         
         # Progress bar
         self.progress = ttk.Progressbar(control_frame, mode='determinate')
-        self.progress.grid(row=0, column=5, sticky=(tk.W, tk.E), padx=(10, 0))
-        control_frame.columnconfigure(5, weight=1)
+        self.progress.grid(row=0, column=6, sticky=(tk.W, tk.E), padx=(10, 0))
+        control_frame.columnconfigure(6, weight=1)
         
         # Results frame
         results_frame = ttk.LabelFrame(main_frame, text="Duplicate Files", padding="5")
@@ -100,8 +112,23 @@ class DuplicateDetectorGUI:
         v_scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
         h_scrollbar.grid(row=1, column=0, sticky=(tk.W, tk.E))
         
+        # Pagination frame
+        pagination_frame = ttk.Frame(results_frame)
+        pagination_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(5, 0))
+        pagination_frame.columnconfigure(1, weight=1)
+
+        self.prev_button = ttk.Button(pagination_frame, text="<< Previous", command=self.go_to_previous_page, state=tk.DISABLED)
+        self.prev_button.grid(row=0, column=0, sticky=tk.W)
+
+        self.page_label = ttk.Label(pagination_frame, text="Page 1 of 1")
+        self.page_label.grid(row=0, column=1, sticky=tk.E)
+
+        self.next_button = ttk.Button(pagination_frame, text="Next >>", command=self.go_to_next_page, state=tk.DISABLED)
+        self.next_button.grid(row=0, column=2, sticky=tk.E)
+        
         # Bind double-click event to open files
         self.tree.bind('<Double-1>', self.on_double_click)
+        self.tree.bind('<<TreeviewSelect>>', self.on_tree_select)
         
         # Status bar
         self.status_var = tk.StringVar()
@@ -109,6 +136,64 @@ class DuplicateDetectorGUI:
         status_bar = ttk.Label(main_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
         status_bar.grid(row=4, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=(10, 0))
         
+    def add_directory(self):
+        if len(self.directories) >= 20:
+            messagebox.showwarning("Warning", "You can select up to 20 directories.")
+            return
+        directory = filedialog.askdirectory()
+        if directory and directory not in self.directories:
+            self.directories.append(directory)
+            self.dir_listbox.insert(tk.END, directory)
+
+    def remove_directory(self):
+        selected_indices = self.dir_listbox.curselection()
+        if not selected_indices:
+            messagebox.showwarning("Warning", "Please select a directory to remove.")
+            return
+
+        for index in sorted(selected_indices, reverse=True):
+            self.dir_listbox.delete(index)
+            del self.directories[index]
+
+    def on_tree_select(self, event):
+        """Update selection_set when user selects/deselects in the tree."""
+        # This event can be noisy, so we detach the handler while we manually change selection
+        self.tree.unbind('<<TreeviewSelect>>')
+
+        # Get all file paths on the current page
+        paths_on_page = set()
+        for item in self.tree_items:
+            paths_on_page.add(self.tree_items[item]['path'])
+
+        # Get selected paths from the tree
+        selected_paths_in_tree = set()
+        for item in self.tree.selection():
+            if item in self.tree_items:
+                selected_paths_in_tree.add(self.tree_items[item]['path'])
+
+        # Remove all paths from this page that were in the master selection
+        self.selection_set -= paths_on_page
+        # Add back only the ones that are currently selected in the tree
+        self.selection_set.update(selected_paths_in_tree)
+        
+        self.status_var.set(f"{len(self.selection_set)} files selected")
+
+        self.tree.bind('<<TreeviewSelect>>', self.on_tree_select)
+
+    def select_all_duplicates(self):
+        """Select all file items in the tree."""
+        if not self.duplicates:
+            messagebox.showwarning("Warning", "Please scan for duplicates first.")
+            return
+        
+        self.selection_set.clear()
+        for _, file_paths in self.all_duplicate_groups:
+            for path in file_paths:
+                self.selection_set.add(path)
+
+        self.display_current_page()
+        self.status_var.set(f"Selected {len(self.selection_set)} files.")
+
     def browse_directory(self):
         directory = filedialog.askdirectory()
         if directory:
@@ -134,12 +219,13 @@ class DuplicateDetectorGUI:
         # Sort words to ignore order
         return tuple(sorted(words))
     
-    def count_files(self, directory_path):
+    def count_files(self, directory_paths):
         """Count total files for ETA calculation"""
         total = 0
         try:
-            for root, dirs, files in os.walk(directory_path):
-                total += len(files)
+            for directory_path in directory_paths:
+                for root, dirs, files in os.walk(directory_path):
+                    total += len(files)
         except Exception:
             pass
         return total
@@ -173,24 +259,25 @@ class DuplicateDetectorGUI:
         """
         Find duplicates in a separate thread to avoid freezing the GUI
         """
-        directory_path = self.directory_var.get()
+        directory_paths = self.directories
         
-        if not directory_path:
-            messagebox.showerror("Error", "Please select a directory first.")
+        if not directory_paths:
+            messagebox.showerror("Error", "Please select at least one directory first.")
             self.progress.stop()
             self.status_var.set("Ready")
             return
         
-        if not os.path.exists(directory_path):
-            messagebox.showerror("Error", f"Directory '{directory_path}' does not exist.")
-            self.progress.stop()
-            self.status_var.set("Ready")
-            return
+        for path in directory_paths:
+            if not os.path.exists(path):
+                messagebox.showerror("Error", f"Directory '{path}' does not exist.")
+                self.progress.stop()
+                self.status_var.set("Ready")
+                return
         
         try:
             # Count files for ETA
             self.status_var.set("Counting files...")
-            self.total_files = self.count_files(directory_path)
+            self.total_files = self.count_files(directory_paths)
             self.processed_files = 0
             self.scan_start_time = time.time()
             
@@ -200,21 +287,22 @@ class DuplicateDetectorGUI:
             file_groups = defaultdict(list)
             
             # Walk through all files in directory and subdirectories
-            for root, dirs, files in os.walk(directory_path):
-                for file in files:
-                    self.processed_files += 1
-                    
-                    # Update progress and ETA
-                    self.root.after(0, lambda: self.progress.configure(value=self.processed_files))
-                    self.root.after(0, lambda: self.update_eta(self.processed_files, self.total_files, self.scan_start_time))
-                    self.root.after(0, lambda: self.status_var.set(f"Processing... {self.processed_files}/{self.total_files} files"))
-                    
-                    full_path = os.path.join(root, file)
-                    normalized_name = self.normalize_filename(file)
-                    
-                    # Only group files that have at least one word
-                    if normalized_name:
-                        file_groups[normalized_name].append(full_path)
+            for directory_path in directory_paths:
+                for root, dirs, files in os.walk(directory_path):
+                    for file in files:
+                        self.processed_files += 1
+                        
+                        # Update progress and ETA
+                        self.root.after(0, lambda: self.progress.configure(value=self.processed_files))
+                        self.root.after(0, lambda: self.update_eta(self.processed_files, self.total_files, self.scan_start_time))
+                        self.root.after(0, lambda: self.status_var.set(f"Processing... {self.processed_files}/{self.total_files} files"))
+                        
+                        full_path = os.path.join(root, file)
+                        normalized_name = self.normalize_filename(file)
+                        
+                        # Only group files that have at least one word
+                        if normalized_name:
+                            file_groups[normalized_name].append(full_path)
             
             # Filter to only groups with duplicates (more than 1 file)
             self.duplicates = {key: paths for key, paths in file_groups.items() if len(paths) > 1}
@@ -240,28 +328,27 @@ class DuplicateDetectorGUI:
         thread.daemon = True
         thread.start()
     
-    def update_results(self):
-        """
-        Update the treeview with duplicate results
-        """
-        self.progress.configure(value=self.total_files)
-        self.eta_var.set("ETA: Complete")
+    def display_current_page(self):
+        """Clears and repopulates the tree with the current page of results."""
+        self.tree.unbind('<<TreeviewSelect>>')
+        self.tree.delete(*self.tree.get_children())
+        self.tree_items.clear()
         
-        if not self.duplicates:
-            self.status_var.set("No duplicate files found")
-            self.duplicate_count_var.set("Duplicates: 0")
-            messagebox.showinfo("Results", "No duplicate files found!")
+        if not self.all_duplicate_groups:
+            self.page_label.config(text="Page 1 of 1")
+            self.prev_button.config(state=tk.DISABLED)
+            self.next_button.config(state=tk.DISABLED)
+            self.tree.bind('<<TreeviewSelect>>', self.on_tree_select)
             return
-        
-        self.tree_items = {}
-        duplicate_count = len(self.duplicates)
-        
-        for i, (normalized_name, file_paths) in enumerate(self.duplicates.items(), 1):
-            # Create parent item for the group
+
+        start_index = (self.current_page - 1) * self.groups_per_page
+        end_index = start_index + self.groups_per_page
+        groups_to_display = self.all_duplicate_groups[start_index:end_index]
+
+        for i, (normalized_name, file_paths) in enumerate(groups_to_display, start=start_index + 1):
             group_name = f"Group {i}: {' '.join(normalized_name)}"
             parent = self.tree.insert('', 'end', text=group_name, values=('', '', ''), tags=('group',))
-            
-            # Add files to the group
+
             for file_path in file_paths:
                 filename = os.path.basename(file_path)
                 try:
@@ -278,13 +365,50 @@ class DuplicateDetectorGUI:
                     'size': file_size,
                     'modified': os.path.getmtime(file_path) if os.path.exists(file_path) else 0
                 }
+                
+                if file_path in self.selection_set:
+                    self.tree.selection_add(item)
             
-            # Expand the group
             self.tree.item(parent, open=True)
-        
-        # Configure tags
+            
         self.tree.tag_configure('group', background='lightgray')
         self.tree.tag_configure('file', background='white')
+
+        self.page_label.config(text=f"Page {self.current_page} of {self.total_pages}")
+        self.prev_button.config(state=tk.NORMAL if self.current_page > 1 else tk.DISABLED)
+        self.next_button.config(state=tk.NORMAL if self.current_page < self.total_pages else tk.DISABLED)
+        self.tree.bind('<<TreeviewSelect>>', self.on_tree_select)
+
+    def go_to_next_page(self):
+        if self.current_page < self.total_pages:
+            self.current_page += 1
+            self.display_current_page()
+
+    def go_to_previous_page(self):
+        if self.current_page > 1:
+            self.current_page -= 1
+            self.display_current_page()
+
+    def update_results(self):
+        """
+        Update the treeview with duplicate results
+        """
+        self.progress.configure(value=self.total_files)
+        self.eta_var.set("ETA: Complete")
+        
+        if not self.duplicates:
+            self.status_var.set("No duplicate files found")
+            self.duplicate_count_var.set("Duplicates: 0")
+            messagebox.showinfo("Results", "No duplicate files found!")
+            self.display_current_page() # Refresh to show empty state
+            return
+        
+        self.all_duplicate_groups = sorted(self.duplicates.items())
+        duplicate_count = len(self.all_duplicate_groups)
+        self.total_pages = (duplicate_count + self.groups_per_page - 1) // self.groups_per_page
+        self.current_page = 1
+        
+        self.display_current_page()
         
         self.duplicate_count_var.set(f"Duplicates: {duplicate_count}")
         self.status_var.set(f"Found {duplicate_count} groups of duplicate files")
@@ -330,21 +454,23 @@ class DuplicateDetectorGUI:
         dialog.destroy()
         
         # Clear current selection
-        self.tree.selection_remove(self.tree.selection())
+        self.selection_set.clear()
         
-        selected_items = []
+        selected_paths = []
         
         # Process each group
-        for group_item in self.tree.get_children():
-            file_items = self.tree.get_children(group_item)
-            if len(file_items) < 2:
+        for _, file_paths in self.all_duplicate_groups:
+            if len(file_paths) < 2:
                 continue
             
             # Get file info for this group
             files_info = []
-            for item in file_items:
-                if item in self.tree_items:
-                    files_info.append((item, self.tree_items[item]['modified']))
+            for path in file_paths:
+                try:
+                    mtime = os.path.getmtime(path)
+                    files_info.append((path, mtime))
+                except OSError:
+                    continue
             
             if not files_info:
                 continue
@@ -354,35 +480,27 @@ class DuplicateDetectorGUI:
             
             if selection_type == "newest":
                 # Select all except the newest (last in sorted list)
-                to_select = [item for item, _ in files_info[:-1]]
+                to_select = [path for path, _ in files_info[:-1]]
             else:  # oldest
                 # Select all except the oldest (first in sorted list)
-                to_select = [item for item, _ in files_info[1:]]
+                to_select = [path for path, _ in files_info[1:]]
             
-            selected_items.extend(to_select)
+            selected_paths.extend(to_select)
         
         # Apply selection
-        for item in selected_items:
-            self.tree.selection_add(item)
+        self.selection_set.update(selected_paths)
         
-        messagebox.showinfo("Smart Selection", f"Selected {len(selected_items)} files.")
+        # Refresh the current page to show new selections
+        self.display_current_page()
+        
+        messagebox.showinfo("Smart Selection", f"Selected {len(self.selection_set)} files.")
     
     def move_selected(self):
         """Move selected files to a new folder"""
-        selected_items = self.tree.selection()
-        
-        if not selected_items:
-            messagebox.showwarning("Warning", "Please select files to move.")
-            return
-        
-        # Filter to only file items (not group headers)
-        files_to_move = []
-        for item in selected_items:
-            if item in self.tree_items:
-                files_to_move.append(self.tree_items[item]['path'])
+        files_to_move = list(self.selection_set)
         
         if not files_to_move:
-            messagebox.showwarning("Warning", "Please select individual files to move (not group headers).")
+            messagebox.showwarning("Warning", "Please select files to move.")
             return
         
         # Get folder name
@@ -424,25 +542,17 @@ class DuplicateDetectorGUI:
                 shutil.move(file_path, dest_path)
                 moved_count += 1
                 
-                # Remove from tree
-                for item, info in list(self.tree_items.items()):
-                    if info['path'] == file_path:
-                        self.tree.delete(item)
-                        del self.tree_items[item]
-                        break
-                        
             except Exception as e:
                 errors.append(f"{os.path.basename(file_path)}: {str(e)}")
         
-        # Clean up empty groups
-        self.cleanup_empty_groups()
+        if moved_count > 0:
+            messagebox.showinfo("Move Complete", f"Successfully moved {moved_count} files to:\n{new_folder_path}")
+            # Rescan to update the state
+            self.scan_duplicates()
         
-        # Show results
         if errors:
             error_msg = f"Moved {moved_count} files successfully to:\n{new_folder_path}\n\nErrors:\n" + "\n".join(errors)
-            messagebox.showwarning("Move Complete", error_msg)
-        else:
-            messagebox.showinfo("Move Complete", f"Successfully moved {moved_count} files to:\n{new_folder_path}")
+            messagebox.showwarning("Move Complete with Errors", error_msg)
         
         self.status_var.set(f"Moved {moved_count} files to {folder_name}")
     
@@ -450,25 +560,15 @@ class DuplicateDetectorGUI:
         """
         Delete selected files
         """
-        selected_items = self.tree.selection()
+        files_to_delete = list(self.selection_set)
         
-        if not selected_items:
+        if not files_to_delete:
             messagebox.showwarning("Warning", "Please select files to delete.")
             return
         
-        # Filter to only file items (not group headers)
-        files_to_delete = []
-        for item in selected_items:
-            if item in self.tree_items:
-                files_to_delete.append(self.tree_items[item]['path'])
-        
-        if not files_to_delete:
-            messagebox.showwarning("Warning", "Please select individual files to delete (not group headers).")
-            return
-        
         # Confirm deletion
-        file_list = "\n".join([f"• {os.path.basename(f)}" for f in files_to_delete])
-        message = f"Are you sure you want to delete the following {len(files_to_delete)} file(s)?\n\n{file_list}"
+        # To avoid a huge confirmation dialog, we'll just show the count
+        message = f"Are you sure you want to delete {len(files_to_delete)} selected file(s)?"
         
         if messagebox.askyesno("Confirm Deletion", message):
             deleted_count = 0
@@ -478,26 +578,19 @@ class DuplicateDetectorGUI:
                 try:
                     os.remove(file_path)
                     deleted_count += 1
-                    
-                    # Remove from tree
-                    for item, info in list(self.tree_items.items()):
-                        if info['path'] == file_path:
-                            self.tree.delete(item)
-                            del self.tree_items[item]
-                            break
                             
                 except Exception as e:
                     errors.append(f"{os.path.basename(file_path)}: {str(e)}")
             
-            # Clean up empty groups
-            self.cleanup_empty_groups()
+            # Rescan to get the fresh state of duplicates
+            if deleted_count > 0:
+                 messagebox.showinfo("Deletion Complete", f"Successfully deleted {deleted_count} files. Rescanning for remaining duplicates...")
+                 self.scan_duplicates()
             
             # Show results
             if errors:
-                error_msg = f"Deleted {deleted_count} files successfully.\n\nErrors:\n" + "\n".join(errors)
-                messagebox.showwarning("Deletion Complete", error_msg)
-            else:
-                messagebox.showinfo("Deletion Complete", f"Successfully deleted {deleted_count} files.")
+                error_msg = f"Deleted {deleted_count} files successfully.\n\nErrors during deletion:\n" + "\n".join(errors)
+                messagebox.showwarning("Deletion Complete with Errors", error_msg)
             
             self.status_var.set(f"Deleted {deleted_count} files")
     
@@ -547,6 +640,11 @@ class DuplicateDetectorGUI:
         self.tree.delete(*self.tree.get_children())
         self.tree_items = {}
         self.duplicates = {}
+        self.all_duplicate_groups = []
+        self.selection_set.clear()
+        self.current_page = 1
+        self.total_pages = 0
+        self.display_current_page()
         self.duplicate_count_var.set("Duplicates: 0")
         self.eta_var.set("ETA: --")
         self.progress.configure(value=0)
